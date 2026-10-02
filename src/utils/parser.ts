@@ -1,6 +1,26 @@
 import { ParsedSections, VisualCue } from '../types';
 
 /**
+ * Strips timestamp markers (e.g. **(0:00)**, (1:30)) and speaker labels (e.g. **LOCUTOR:**, NARRADOR:).
+ */
+export function cleanRoteiroClutter(text: string): string {
+  if (!text) return '';
+  return text
+    // Remove bold/plain timestamps: **(0:00)**, (0:00), **(1:30)**, (1:30), **0:00**, [0:00], etc.
+    .replace(/\*{0,2}\(\s*\d{1,2}:\d{2}(?::\d{2})?\s*\)\*{0,2}\s*:?/g, '')
+    .replace(/\*{0,2}\[\s*\d{1,2}:\d{2}(?::\d{2})?\s*\]\*{0,2}\s*:?/g, '')
+    .replace(/^\s*\*{0,2}\d{1,2}:\d{2}(?::\d{2})?\*{0,2}\s*[-–—:]?\s*/gm, '')
+    // Remove speaker prefixes: **LOCUTOR:**, LOCUTOR:, **NARRADOR:**, NARRADOR:, **VOZ:**, etc.
+    .replace(/\*{0,2}\b(?:LOCUTOR|NARRADOR|APRESENTADOR|VOZ|VOZ OFF|V\.O\.|HOST)\b\*{0,2}\s*:?\s*/gi, '')
+    // REMOVE ALL ASTERISKS (**, *, ***) completely from the text
+    .replace(/\*{1,4}/g, '')
+    // Clean orphan double spaces or spaces before punctuation
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .trim();
+}
+
+/**
  * Parses the raw AI response into structured sections adhering to Rule 39:
  * 1. ÂNGULO ESCOLHIDO
  * 2. PERGUNTA CENTRAL
@@ -42,7 +62,7 @@ export function parseScriptResponse(rawText: string): ParsedSections {
       arquitetura: '',
       hook: '',
       fatosBase: [],
-      roteiroCompleto: rawText.trim(),
+      roteiroCompleto: cleanRoteiroClutter(rawText.trim()),
       fontes: [],
       alertasFactuais: [],
       proximoGatilho: '',
@@ -125,7 +145,7 @@ export function parseScriptResponse(rawText: string): ParsedSections {
     arquitetura,
     hook,
     fatosBase: splitBulletPoints(fatosBaseRaw),
-    roteiroCompleto: roteiroCompleto || rawText.trim(),
+    roteiroCompleto: cleanRoteiroClutter(roteiroCompleto || rawText.trim()),
     fontes: splitBulletPoints(fontesRaw),
     alertasFactuais: splitBulletPoints(alertasFactuaisRaw),
     proximoGatilho,
@@ -167,12 +187,18 @@ export function extractVisualCues(scriptText: string): VisualCue[] {
 }
 
 /**
- * Strips visual cue brackets to get clean locution text for teleprompter/audio.
+ * Strips visual cue brackets and clutter to get pure clean locution text for teleprompter/audio.
  */
 export function getCleanLocutionText(scriptText: string): string {
-  return scriptText
-    .replace(/\[(?:CLIP REAL|B-ROLL|MAPA|DOCUMENTO NA TELA|IMAGEM DE ARQUIVO|DECLARAÇÃO|GRÁFICO|BUSCAR IMAGENS\/ARQUIVO)[^\]]*\]/gi, '')
+  if (!scriptText) return '';
+  const withoutCues = scriptText
+    .replace(/\[(?:CLIP REAL|B-ROLL|MAPA|DOCUMENTO NA TELA|IMAGEM DE ARQUIVO|DECLARAÇÃO|GRÁFICO|BUSCAR IMAGENS\/ARQUIVO|SUGESTÃO DE ACERVO|CLIP|MAPA GEOGRÁFICO|DOCUMENTO)[^\]]*\]/gi, '')
+    .replace(/\[[A-ZÀ-Ú\s\/\-—:0-9]{3,}[^\]]*\]/g, '')
     .replace(/#{1,4}\s+[^\n]+/g, '')
+    .replace(/\*{1,4}/g, '');
+
+  return cleanRoteiroClutter(withoutCues)
+    .replace(/\*{1,4}/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

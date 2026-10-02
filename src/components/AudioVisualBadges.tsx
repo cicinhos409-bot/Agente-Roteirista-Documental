@@ -1,5 +1,6 @@
 import React from 'react';
 import { Film, Video, MapPin, FileText, Archive, MessageSquareQuote, BarChart3, Search } from 'lucide-react';
+import { cleanRoteiroClutter } from '../utils/parser';
 
 interface AudioVisualBadgeProps {
   cueText: string;
@@ -65,19 +66,24 @@ export const AudioVisualBadge: React.FC<AudioVisualBadgeProps> = ({ cueText }) =
  * Helper to render formatted script paragraphs with embedded audio-visual badge chips
  */
 export const FormattedScriptText: React.FC<{ text: string }> = ({ text }) => {
+  const cleaned = cleanRoteiroClutter(text).replace(/\*{1,4}/g, '');
+
   return (
     <div className="space-y-4 text-zinc-200 leading-relaxed font-normal text-base">
-      {text.split(/\n\n+/).map((para, pIndex) => {
+      {cleaned.split(/\n\n+/).map((para, pIndex) => {
+        const cleanPara = para.trim().replace(/\*{1,4}/g, '');
+        if (!cleanPara) return null;
+
         // Skip markdown headings if present
-        if (para.startsWith('#')) {
+        if (cleanPara.startsWith('#')) {
           return (
             <h4 key={pIndex} className="text-amber-400 font-cinzel text-lg font-bold tracking-wide mt-6 mb-2 border-b border-zinc-800 pb-1">
-              {para.replace(/^#+\s*/, '')}
+              {cleanPara.replace(/^#+\s*/, '')}
             </h4>
           );
         }
 
-        const paraParts = para.split(/(\[[^\]]+\])/g);
+        const paraParts = cleanPara.split(/(\[[^\]]+\])/g);
 
         return (
           <p key={pIndex} className="relative group p-4 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-zinc-700 transition-colors">
@@ -86,7 +92,8 @@ export const FormattedScriptText: React.FC<{ text: string }> = ({ text }) => {
               if (part.startsWith('[') && part.endsWith(']')) {
                 return <AudioVisualBadge key={index} cueText={part} />;
               }
-              return <span key={index}>{part}</span>;
+              const cleanPart = cleanRoteiroClutter(part).replace(/\*{1,4}/g, '');
+              return <span key={index}>{cleanPart}</span>;
             })}
           </p>
         );

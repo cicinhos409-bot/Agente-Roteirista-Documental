@@ -75,6 +75,12 @@ DURAÇÃO E PALAVRAS:
 REGRA PARA A NARRAÇÃO:
 Não revele ao espectador termos internos ("hook", "re-hook", "microconclusão", "expansão vertical"). Soe como um documentário de altíssimo nível em português brasileiro fluente, inteligente, envolvente e cinematográfico.
 
+PROIBIÇÕES ABSOLUTAS DE FORMATAÇÃO DO ROTEIRO:
+- NUNCA use asteriscos ("**" ou "*") em nenhuma parte do roteiro. É TERMINANTEMENTE PROIBIDO usar asteriscos para negrito, ênfase ou itálico.
+- NUNCA escreva marcadores de tempo ou minutagem como "(0:00)", "**(0:00)**", "(1:30)", "**(1:30)**", etc.
+- NUNCA escreva rótulos de quem fala como "**LOCUTOR:**", "LOCUTOR:", "**NARRADOR:**", "NARRADOR:", "**VOZ:**", "VOZ:", etc.
+- O texto da narração deve ser 100% LIMPO e CORRIDO, em texto comum, contendo unicamente as frases que o locutor vai falar em voz alta.
+
 FORMATO OBRIGATÓRIO DA RESPOSTA (se não for "SOMENTE ROTEIRO"):
 ## 1. ÂNGULO ESCOLHIDO
 [2-4 linhas explicando a tese e ângulo da narrativa]
@@ -105,6 +111,68 @@ FORMATO OBRIGATÓRIO DA RESPOSTA (se não for "SOMENTE ROTEIRO"):
 
 Se a ordem for "SOMENTE ROTEIRO", entregue diretamente o texto do Roteiro Completo com as marcações audiovisuais, sem os cabeçalhos das outras seções.
 `;
+
+// Helper to detect 429 quota errors
+function isQuotaExceededError(error: any): boolean {
+  if (!error) return false;
+  if (error.status === 429 || error.code === 429) return true;
+  const msg = typeof error === 'string' ? error : (error.message || JSON.stringify(error));
+  return msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota');
+}
+
+// Resilient execution with fallback across models and search tools to mitigate 429 quota exhaustion
+async function executeWithModelFallback(prompt: string, systemInstruction: string) {
+  // Attempt 1: gemini-3.8-flash with Google Search
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        tools: [{ googleSearch: {} }],
+        temperature: 0.65,
+      },
+    });
+    return { response, model: 'gemini-3.8-flash', hasGrounding: true };
+  } catch (err: any) {
+    console.warn('Attempt 1 (gemini-3.8-flash with search) error:', err?.message || err);
+    if (isQuotaExceededError(err)) {
+      console.warn('Quota exceeded on Attempt 1. Retrying with gemini-3.8-flash without search...');
+    }
+  }
+
+  // Attempt 2: gemini-3.8-flash WITHOUT search tools (reduces tool-invocation quota consumption)
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        temperature: 0.65,
+      },
+    });
+    return { response, model: 'gemini-3.8-flash', hasGrounding: false };
+  } catch (err: any) {
+    console.warn('Attempt 2 (gemini-3.8-flash without search) error:', err?.message || err);
+  }
+
+  // Attempt 3: gemini-3.1-flash-lite (high throughput, lowest latency, independent quota tier)
+  try {
+    console.log('Attempt 3: Falling back to gemini-3.1-flash-lite...');
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.1-flash-lite',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        temperature: 0.65,
+      },
+    });
+    return { response, model: 'gemini-3.1-flash-lite', hasGrounding: false };
+  } catch (err: any) {
+    console.error('Attempt 3 (gemini-3.1-flash-lite) error:', err?.message || err);
+    throw err;
+  }
+}
 
 // API endpoint to generate script
 app.post('/api/generate-script', async (req, res) => {
@@ -177,16 +245,9 @@ app.post('/api/generate-script', async (req, res) => {
     } else {
       prompt += `\nINSTRUÇÃO: Realize a pesquisa completa com grounding, audite as informações e entregue rigorosamente as 9 seções obrigatórias.\n`;
     }
+    prompt += `\nLEMBRE-SE: No Roteiro Completo, NUNCA use asteriscos ("**" ou "*"), NÃO coloque minutagem (ex: "(0:00)") e NÃO escreva "**LOCUTOR:**" ou "NARRADOR:". Entregue apenas o texto corrido 100% limpo.\n`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        systemInstruction: MASTER_SYSTEM_INSTRUCTION,
-        tools: [{ googleSearch: {} }],
-        temperature: 0.65,
-      },
-    });
+    const { response, model, hasGrounding } = await executeWithModelFallback(prompt, MASTER_SYSTEM_INSTRUCTION);
 
     const outputText = response.text || '';
 
@@ -204,11 +265,18 @@ app.post('/api/generate-script', async (req, res) => {
       searchSources: searchChunks,
       targetWords,
       duration,
+      modelUsed: model,
+      hasGrounding,
     });
   } catch (error: any) {
     console.error('Error generating script:', error);
-    res.status(500).json({
-      error: error.message || 'Erro ao processar roteiro com o Agente Roteirista.',
+    const isQuota = isQuotaExceededError(error);
+
+    res.status(isQuota ? 429 : 500).json({
+      error: isQuota
+        ? 'Limite de cota de requisições por minuto da API Gemini atingido (Erro 429: Cota excedida). Aguarde cerca de 30 a 60 segundos para renovação automática ou verifique suas credenciais de faturamento no AI Studio.'
+        : (error.message || 'Erro ao processar roteiro com o Agente Roteirista.'),
+      isQuotaExceeded: isQuota,
     });
   }
 });
@@ -258,20 +326,41 @@ TEXTO DO ROTEIRO:
 ${scriptText}
 `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: auditPrompt,
-      config: {
-        temperature: 0.3,
-      },
-    });
+    // Try gemini-3.8-flash first, fallback to gemini-3.1-flash-lite on 429
+    let responseText = '';
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: auditPrompt,
+        config: { temperature: 0.3 },
+      });
+      responseText = response.text || '';
+    } catch (auditErr: any) {
+      if (isQuotaExceededError(auditErr)) {
+        console.warn('Audit gemini-3.8-flash quota exceeded, falling back to gemini-3.1-flash-lite...');
+        const fallbackRes = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: auditPrompt,
+          config: { temperature: 0.3 },
+        });
+        responseText = fallbackRes.text || '';
+      } else {
+        throw auditErr;
+      }
+    }
 
     res.json({
-      auditReport: response.text || '',
+      auditReport: responseText,
     });
   } catch (error: any) {
     console.error('Error auditing script:', error);
-    res.status(500).json({ error: error.message || 'Erro ao auditar o roteiro.' });
+    const isQuota = isQuotaExceededError(error);
+    res.status(isQuota ? 429 : 500).json({
+      error: isQuota
+        ? 'Limite de cota de requisições por minuto atingido (Erro 429). Aguarde 30 a 60 segundos para nova tentativa.'
+        : (error.message || 'Erro ao auditar o roteiro.'),
+      isQuotaExceeded: isQuota,
+    });
   }
 });
 
@@ -328,7 +417,13 @@ app.post('/api/tts', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Error generating narration audio:', error);
-    res.status(500).json({ error: error.message || 'Erro ao sintetizar narração TTS.' });
+    const isQuota = isQuotaExceededError(error);
+    res.status(isQuota ? 429 : 500).json({
+      error: isQuota
+        ? 'Limite de cota de áudio atingido temporariamente (Erro 429). Aguarde 30 a 60 segundos.'
+        : (error.message || 'Erro ao sintetizar narração TTS.'),
+      isQuotaExceeded: isQuota,
+    });
   }
 });
 

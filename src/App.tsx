@@ -14,9 +14,10 @@ import {
   Volume2,
   Copy,
   Check,
+  RotateCcw,
 } from 'lucide-react';
 import { ScriptRequest, ScriptResponse, ParsedSections, HistoryItem, GroundingSource } from './types';
-import { parseScriptResponse, calculatePacing, extractVisualCues } from './utils/parser';
+import { parseScriptResponse, calculatePacing, extractVisualCues, getCleanLocutionText } from './utils/parser';
 import { ScriptInputForm } from './components/ScriptInputForm';
 import { FormattedScriptText } from './components/AudioVisualBadges';
 import { RetentionTimeline } from './components/RetentionTimeline';
@@ -34,6 +35,7 @@ export default function App() {
   const [searchQueries, setSearchQueries] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [isQuotaError, setIsQuotaError] = useState<boolean>(false);
 
   // Active view tab
   const [activeTab, setActiveTab] = useState<'roteiro' | 'dossie' | 'auditoria'>('roteiro');
@@ -44,6 +46,7 @@ export default function App() {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedCorrido, setCopiedCorrido] = useState(false);
   const [isTTSPlaying, setIsTTSPlaying] = useState(false);
 
   // Local storage history
@@ -69,6 +72,7 @@ export default function App() {
   const handleGenerateScript = async (request: ScriptRequest) => {
     setIsLoading(true);
     setError(null);
+    setIsQuotaError(false);
     setCurrentRequest(request);
 
     try {
@@ -78,9 +82,12 @@ export default function App() {
         body: JSON.stringify(request),
       });
 
-      const data: ScriptResponse = await res.json();
+      const data = await res.json();
       if (!res.ok) {
-        throw new Error((data as any).error || 'Falha ao gerar roteiro.');
+        if (res.status === 429 || data.isQuotaExceeded) {
+          setIsQuotaError(true);
+        }
+        throw new Error(data.error || 'Falha ao gerar roteiro.');
       }
 
       const text = data.content || '';
@@ -108,7 +115,11 @@ export default function App() {
 
       setHistory((prev) => [newHistoryItem, ...prev.slice(0, 19)]);
     } catch (err: any) {
-      setError(err.message || 'Erro inesperado na geração do roteiro.');
+      const msg = err.message || 'Erro inesperado na geração do roteiro.';
+      setError(msg);
+      if (msg.includes('429') || msg.includes('cota') || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED')) {
+        setIsQuotaError(true);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -138,6 +149,15 @@ export default function App() {
     navigator.clipboard.writeText(parsedSections.roteiroCompleto);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Copy clean continuous narration script without stage tags or brackets
+  const handleCopyCorrido = () => {
+    if (!parsedSections) return;
+    const cleanText = getCleanLocutionText(parsedSections.roteiroCompleto);
+    navigator.clipboard.writeText(cleanText);
+    setCopiedCorrido(true);
+    setTimeout(() => setCopiedCorrido(false), 2000);
   };
 
   // Audio preview TTS
@@ -238,14 +258,42 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-8 py-6 space-y-8">
         {/* Error message */}
         {error && (
-          <div className="p-4 rounded-xl bg-red-500/15 border border-red-500/50 text-red-400 text-xs sm:text-sm flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <ShieldAlert className="w-5 h-5 shrink-0 text-red-400" />
-              <span>{error}</span>
+          <div
+            className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
+              isQuotaError
+                ? 'bg-amber-500/10 border-amber-500/40 text-amber-300'
+                : 'bg-red-500/15 border-red-500/50 text-red-400'
+            }`}
+          >
+            <div className="flex items-start gap-2.5">
+              <ShieldAlert className={`w-5 h-5 shrink-0 mt-0.5 ${isQuotaError ? 'text-amber-400' : 'text-red-400'}`} />
+              <div>
+                <div className="font-semibold text-sm">
+                  {isQuotaError ? 'Cota Temporária por Minuto Atingida (Erro 429)' : 'Erro ao Processar Roteiro'}
+                </div>
+                <div className="text-xs text-zinc-300 mt-0.5 leading-relaxed">
+                  {error}
+                </div>
+              </div>
             </div>
-            <button onClick={() => setError(null)} className="text-xs underline hover:text-white cursor-pointer">
-              Dispensar
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {currentRequest && (
+                <button
+                  onClick={() => handleGenerateScript(currentRequest)}
+                  disabled={isLoading}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
+                  Tentar Novamente
+                </button>
+              )}
+              <button
+                onClick={() => setError(null)}
+                className="text-xs underline hover:text-white cursor-pointer px-1 py-1"
+              >
+                Dispensar
+              </button>
+            </div>
           </div>
         )}
 
@@ -287,6 +335,24 @@ export default function App() {
                   <span className="text-zinc-500 block text-[10px] uppercase">Plano Audiovisual</span>
                   <span className="font-bold text-violet-400">{visualCues.length} Cues ([CLIP]/[MAPA])</span>
                 </div>
+
+                <button
+                  onClick={handleCopyCorrido}
+                  className="px-3.5 py-2 rounded-lg bg-zinc-950 border border-zinc-800 hover:border-amber-500/50 hover:bg-zinc-800 text-amber-400 font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  title="Copiar texto limpo para locução (sem tags visuais nem colchetes)"
+                >
+                  {copiedCorrido ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-400" />
+                      <span className="text-emerald-400">Roteiro Corrido Copiado!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4" />
+                      <span>Copiar Roteiro Corrido</span>
+                    </>
+                  )}
+                </button>
 
                 <button
                   onClick={() => setIsPrompterOpen(true)}
@@ -381,12 +447,29 @@ export default function App() {
                       className="px-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-800 text-amber-400 text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
                     >
                       <Volume2 className={`w-3.5 h-3.5 ${isTTSPlaying ? 'animate-bounce' : ''}`} />
-                      {isTTSPlaying ? 'Reproduzindo voz...' : 'Ouvir Tom de Locução (TTS)'}
+                      {isTTSPlaying ? 'Reproduzindo voz...' : 'Ouvir Locução (TTS)'}
+                    </button>
+
+                    <button
+                      onClick={handleCopyCorrido}
+                      className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-xs flex items-center gap-1.5 transition-colors shadow-sm shadow-amber-500/20 cursor-pointer"
+                      title="Copiar apenas o texto corrido pronto para locução sem marcações [CLIP REAL], [MAPA] etc."
+                    >
+                      {copiedCorrido ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-zinc-950" /> Roteiro Corrido Copiado!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" /> Copiar Roteiro Corrido
+                        </>
+                      )}
                     </button>
 
                     <button
                       onClick={handleCopyScript}
-                      className="px-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-800 text-zinc-200 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                      className="px-3 py-1.5 rounded-lg bg-zinc-950 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                      title="Copiar roteiro com todas as tags audiovisuais"
                     >
                       {copied ? (
                         <>
@@ -394,7 +477,7 @@ export default function App() {
                         </>
                       ) : (
                         <>
-                          <Copy className="w-3.5 h-3.5" /> Copiar Roteiro
+                          <Copy className="w-3.5 h-3.5" /> Com Tags
                         </>
                       )}
                     </button>
