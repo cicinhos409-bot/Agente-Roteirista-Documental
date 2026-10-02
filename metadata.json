@@ -1,0 +1,6 @@
+{
+  "name": "Roteirista Documental - Agente de Alta Retenção",
+  "description": "Estúdio e Agente de Roteirização Documental e Investigativa de Alta Retenção para YouTube com fact-checking, motores de expansão e teleprompter integrado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
